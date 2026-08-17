@@ -4,12 +4,17 @@ RSpec.describe AggregationJob do
   let(:tenant) { create_tenant }
   let(:feedback) { create_feedback(tenant, score: 5, sentiment: "positive", status: "sentiment_analyzed") }
 
-  it "increments the tenant's positive_count" do
+  def stat_for(feedback)
+    TenantDailyStat.find_by(tenant: feedback.tenant, stat_date: feedback.occurred_at&.to_date || feedback.created_at.to_date)
+  end
+
+  it "records the feedback in tenant_daily_stats for its occurred_at date" do
     described_class.new.perform(feedback.id)
 
-    aggregate = TenantAggregate.find_by(tenant: tenant)
-    expect(aggregate.positive_count).to eq(1)
-    expect(aggregate.negative_count).to eq(0)
+    stat = stat_for(feedback)
+    expect(stat.feedback_count).to eq(1)
+    expect(stat.score_sum).to eq(5)
+    expect(stat.score_count).to eq(1)
   end
 
   it "transitions the feedback status to aggregated" do
@@ -24,12 +29,11 @@ RSpec.describe AggregationJob do
     }.to change { WebhookJob.jobs.size }.by(1)
   end
 
-  it "does not double-count when run twice for the same feedback (duplicate execution)" do
+  it "does not double-count tenant_daily_stats when run twice for the same feedback (duplicate execution)" do
     described_class.new.perform(feedback.id)
     described_class.new.perform(feedback.id)
 
-    aggregate = TenantAggregate.find_by(tenant: tenant)
-    expect(aggregate.positive_count).to eq(1)
+    expect(stat_for(feedback).feedback_count).to eq(1)
   end
 
   it "still forwards to WebhookJob on the second (no-op) run" do
@@ -46,8 +50,8 @@ RSpec.describe AggregationJob do
     described_class.new.perform(feedback.id)
     described_class.new.perform(other_feedback.id)
 
-    expect(TenantAggregate.find_by(tenant: tenant).positive_count).to eq(1)
-    expect(TenantAggregate.find_by(tenant: other_tenant).negative_count).to eq(1)
+    expect(stat_for(feedback).feedback_count).to eq(1)
+    expect(stat_for(other_feedback).feedback_count).to eq(1)
   end
 
   it "does not raise when the feedback no longer exists" do
